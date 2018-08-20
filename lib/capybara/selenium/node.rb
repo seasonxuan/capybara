@@ -83,13 +83,11 @@ class Capybara::Selenium::Node < Capybara::Driver::Node
   end
 
   def click(keys = [], **options)
-    if keys.empty? && !coords?(options)
-      native.click
-    else
-      scroll_if_needed do
-        action_with_modifiers(keys, options) do |action|
-          coords?(options) ? action.click : action.click(native)
-        end
+    click_options = ClickOptions.new(keys, options)
+    return native.click if click_options.empty?
+    scroll_if_needed do
+      action_with_modifiers(click_options) do |action|
+        click_options.coords? ? action.click : action.click(native)
       end
     end
   rescue StandardError => err
@@ -102,17 +100,19 @@ class Capybara::Selenium::Node < Capybara::Driver::Node
   end
 
   def right_click(keys = [], **options)
+    click_options = ClickOptions.new(keys, options)
     scroll_if_needed do
-      action_with_modifiers(keys, options) do |action|
-        coords?(options) ? action.context_click : action.context_click(native)
+      action_with_modifiers(click_options) do |action|
+        click_options.coords? ? action.context_click : action.context_click(native)
       end
     end
   end
 
   def double_click(keys = [], **options)
+    click_options = ClickOptions.new(keys, options)
     scroll_if_needed do
-      action_with_modifiers(keys, options) do |action|
-        coords?(options) ? action.double_click : action.double_click(native)
+      action_with_modifiers(click_options) do |action|
+        click_options.coords? ? action.double_click : action.double_click(native)
       end
     end
   end
@@ -193,10 +193,6 @@ class Capybara::Selenium::Node < Capybara::Driver::Node
 
 private
 
-  def coords?(options)
-    options[:x] && options[:y]
-  end
-
   def boolean_attr(val)
     val && (val != 'false')
   end
@@ -250,21 +246,24 @@ private
   end
 
   def set_date(value) # rubocop:disable Naming/AccessorMethodName
-    return set_text(value) if value.is_a?(String) || !value.respond_to?(:to_date)
+    value = SettableValue.new(value)
+    return set_text(value) unless value.dateable?
     # TODO: this would be better if locale can be detected and correct keystrokes sent
-    update_value_js(value.to_date.strftime('%Y-%m-%d'))
+    update_value_js(value.to_date_str)
   end
 
   def set_time(value) # rubocop:disable Naming/AccessorMethodName
-    return set_text(value) if value.is_a?(String) || !value.respond_to?(:to_time)
+    value = SettableValue.new(value)
+    return set_text(value) unless value.timeable?
     # TODO: this would be better if locale can be detected and correct keystrokes sent
-    update_value_js(value.to_time.strftime('%H:%M'))
+    update_value_js(value.to_time_str)
   end
 
   def set_datetime_local(value) # rubocop:disable Naming/AccessorMethodName
-    return set_text(value) if value.is_a?(String) || !value.respond_to?(:to_time)
+    value = SettableValue.new(value)
+    return set_text(value) unless value.timeable?
     # TODO: this would be better if locale can be detected and correct keystrokes sent
-    update_value_js(value.to_time.strftime('%Y-%m-%dT%H:%M'))
+    update_value_js(value.to_datetime_str)
   end
 
   def update_value_js(value)
@@ -306,12 +305,12 @@ private
     driver.browser.action.send_keys(value.to_s).perform
   end
 
-  def action_with_modifiers(keys, x: nil, y: nil)
+  def action_with_modifiers(click_options)
     actions = driver.browser.action
-    actions.move_to(native, x, y)
-    modifiers_down(actions, keys)
+    actions.move_to(native, *click_options.coords)
+    modifiers_down(actions, click_options.keys)
     yield actions
-    modifiers_up(actions, keys)
+    modifiers_up(actions, click_options.keys)
     actions.perform
   ensure
     act = driver.browser.action
@@ -319,18 +318,14 @@ private
   end
 
   def modifiers_down(actions, keys)
-    keys.each do |key|
-      key = case key
-      when :ctrl then :control
-      when :command, :cmd then :meta
-      else
-        key
-      end
-      actions.key_down(key)
-    end
+    each_key(keys) { |key| actions.key_down(key) }
   end
 
   def modifiers_up(actions, keys)
+    each_key(keys) { |key| actions.key_up(key) }
+  end
+
+  def each_key(keys)
     keys.each do |key|
       key = case key
       when :ctrl then :control
@@ -338,7 +333,60 @@ private
       else
         key
       end
-      actions.key_up(key)
+      yield key
     end
   end
+
+  # SettableValue encapsulates time/date field formatting
+  class SettableValue
+    attr_reader :value
+
+    def initialize(value)
+      @value = value
+    end
+
+    def dateable?
+      !value.is_a?(String) && value.respond_to?(:to_date)
+    end
+
+    def to_date_str
+      value.to_date.strftime('%Y-%m-%d')
+    end
+
+    def timeable?
+      !value.is_a?(String) && value.respond_to?(:to_time)
+    end
+
+    def to_time_str
+      value.to_time.strftime('%H:%M')
+    end
+
+    def to_datetime_str
+      value.to_time.strftime('%Y-%m-%dT%H:%M')
+    end
+  end
+  private_constant :SettableValue
+
+  # ClickOptions encapsulates click option logic
+  class ClickOptions
+    attr_reader :keys, :options
+
+    def initialize(keys, options)
+      @keys = keys
+      @options = options
+    end
+
+    def coords?
+      options[:x] && options[:y]
+    end
+
+    def coords
+      [options[:x], options[:y]]
+    end
+
+    def empty?
+      keys.empty? && !coords?
+    end
+  end
+  private_constant :ClickOptions
 end
